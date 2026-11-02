@@ -1,0 +1,118 @@
+
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract MUSLIM project
+        run: |
+          test -f Muslim-Android-Project-Updated.zip
+          unzip -o Muslim-Android-Project-Updated.zip -d . -x '.github/workflows/*'
+
+      - name: Check project files
+        run: |
+          test -f package.json
+          test -f capacitor.config.json
+          test -f www/index.html
+          test -f resources/icon.png
+          test -f resources/notification-icon.png
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare audio list
+        run: |
+          node -e "const fs=require('fs');const d='www/audio';const a=fs.readdirSync(d).map(f=>(f.match(/^hisn-exact-(\\d+)\\.mp3$/)||[])[1]).filter(Boolean).map(Number).sort((a,b)=>a-b);fs.writeFileSync(d+'/list.json',JSON.stringify(a))"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Install application icons
+        run: |
+          cp -r resources/mipmap-* android/app/src/main/res/
+          mkdir -p android/app/src/main/res/drawable-nodpi
+          cp resources/notification-icon.png android/app/src/main/res/drawable-nodpi/ic_stat_muslim.png
+
+      - name: Configure Android manifest
+        run: |
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          path = "android/app/src/main/AndroidManifest.xml"
+          ns = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", ns)
+
+          tree = ET.parse(path)
+          root = tree.getroot()
+
+          permissions = [
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.SCHEDULE_EXACT_ALARM",
+              "android.permission.RECEIVE_BOOT_COMPLETED",
+              "android.permission.WAKE_LOCK"
+          ]
+
+          existing = {
+              item.get("{" + ns + "}name")
+              for item in root.findall("uses-permission")
+          }
+
+          for permission in permissions:
+              if permission not in existing:
+                  ET.SubElement(root, "uses-permission", {
+                      "{" + ns + "}name": permission
+                  })
+
+          app = root.find("application")
+          if app is None:
+              raise Exception("Android application element missing")
+
+          app.set("{" + ns + "}icon", "@mipmap/ic_launcher")
+          app.set("{" + ns + "}roundIcon", "@mipmap/ic_launcher_round")
+
+          tree.write(path, encoding="utf-8", xml_declaration=True)
+          PY
+
+      - name: Install Adhan sound
+        run: |
+          mkdir -p android/app/src/main/res/raw
+          cp resources/adhan.mp3 android/app/src/main/res/raw/adhan.mp3
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload MUSLIM APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MUSLIM-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
